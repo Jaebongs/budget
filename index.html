@@ -235,6 +235,20 @@ input,select{font-family:inherit;font-size:16px;color:inherit}
     </div>
 
     <div class="card">
+      <div class="eyebrow" style="margin-bottom:10px">알림창에 띄우기</div>
+      <div class="toggle">
+        <div>
+          <div class="tt">남은 금액 상주 알림</div>
+          <div class="th">알림창과 잠금화면에 남은 금액이 계속 떠 있습니다.</div>
+        </div>
+        <button class="sw" id="notifySw" role="switch" aria-checked="false"><i></i></button>
+      </div>
+      <div class="hint" style="margin-top:10px">
+        앱을 열거나 내역을 입력할 때 갱신됩니다. 알림을 지우면 다음에 앱을 열 때 다시 뜹니다.
+      </div>
+    </div>
+
+    <div class="card">
       <div class="eyebrow" style="margin-bottom:10px">백업</div>
       <button class="btn" id="expBtn">파일로 내보내기</button>
       <button class="btn" id="impBtn">파일에서 불러오기</button>
@@ -327,7 +341,7 @@ async function saveRaw(v){
 }
 
 const DEFAULT_CATS=['식비','장보기','카페·간식','교통','생활용품','육아','문화·여가','의료·경조사','기타'];
-let D={ budget:500000, categories:DEFAULT_CATS.slice(), entries:[] };
+let D={ budget:500000, categories:DEFAULT_CATS.slice(), entries:[], notify:false };
 async function persist(){ await saveRaw(JSON.stringify(D)); }
 
 /* ================= 유틸 ================= */
@@ -661,19 +675,73 @@ document.getElementById('impFile').onchange=function(){
       if(!confirm('지금 기록을 파일 내용으로 바꿉니다. 진행할까요?')) return;
       D={ budget:Number(o.budget)||0,
           categories:(Array.isArray(o.categories)&&o.categories.length)?o.categories:DEFAULT_CATS.slice(),
-          entries:migrate(o.entries) };
+          entries:migrate(o.entries), notify:D.notify };
       await persist(); renderAll(); toast('불러왔습니다');
     }catch(e){ toast('읽을 수 없는 파일입니다'); }
   };
   r.readAsText(f); this.value='';
 };
+document.getElementById('notifySw').onclick=toggleNotify;
 document.getElementById('resetBtn').onclick=async()=>{
   if(!confirm('모든 기록이 사라집니다. 되돌릴 수 없습니다. 지울까요?')) return;
   D={budget:D.budget,categories:D.categories,entries:[]};
   await persist(); renderAll(); toast('모두 지웠습니다');
 };
 
-function renderAll(){ renderHome(); renderList(); renderSet(); }
+/* ================= 상주 알림 ================= */
+const canNotify = ('Notification' in window) && ('serviceWorker' in navigator);
+
+async function showBudgetNotice(){
+  if(!D.notify || !canNotify) return;
+  if(Notification.permission!=='granted') return;
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    const y=today.getFullYear(), m=today.getMonth();
+    const dim=daysIn(y,m), dnow=today.getDate();
+    const {spent,total,remain}=calc(y,m);
+    const left=dim-dnow+1;
+    const rate=total>0?Math.round(Math.max(0,spent)/total*100):0;
+    const title=(m+1)+'월 · '+(remain<0?'예산 초과 '+won(-remain):won(remain)+' 남음');
+    const body=remain<0
+      ? '사용률 '+rate+'% · '+left+'일 남음'
+      : '하루 '+won(left>0?remain/left:0)+' 페이스 · 사용률 '+rate+'%';
+    await reg.showNotification(title,{
+      body:body, tag:'budget-status', renotify:false, silent:true,
+      icon:'icon-192.png', badge:'icon-192.png',
+      data:{url:location.href}
+    });
+  }catch(e){}
+}
+async function clearBudgetNotice(){
+  if(!canNotify) return;
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    const ns=await reg.getNotifications({tag:'budget-status'});
+    ns.forEach(n=>n.close());
+  }catch(e){}
+}
+async function toggleNotify(){
+  if(!canNotify){ toast('이 브라우저에서는 안 됩니다'); return; }
+  if(D.notify){
+    D.notify=false; await persist(); setNotifySw(false); await clearBudgetNotice();
+    toast('알림을 껐습니다'); return;
+  }
+  let perm=Notification.permission;
+  if(perm==='default'){ try{ perm=await Notification.requestPermission(); }catch(e){} }
+  if(perm!=='granted'){
+    toast('폰 설정에서 알림을 허용해주세요');
+    return;
+  }
+  D.notify=true; await persist(); setNotifySw(true); await showBudgetNotice();
+  toast('알림을 켰습니다');
+}
+function setNotifySw(on){
+  const sw=document.getElementById('notifySw');
+  if(!sw) return;
+  sw.classList.toggle('on',on); sw.setAttribute('aria-checked',on?'true':'false');
+}
+
+function renderAll(){ renderHome(); renderList(); renderSet(); setNotifySw(!!D.notify); showBudgetNotice(); }
 
 /* 옛 방식(지출 안에 붙은 환급) → 별도 환급 기록으로 변환 */
 function migrate(list){
@@ -700,6 +768,7 @@ function migrate(list){
       if(typeof o.budget==='number') D.budget=o.budget;
       if(Array.isArray(o.categories)&&o.categories.length) D.categories=o.categories;
       if(Array.isArray(o.entries)) D.entries=migrate(o.entries);
+      D.notify=!!o.notify;
       await persist();
     }catch(e){}
   }
